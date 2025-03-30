@@ -12,6 +12,7 @@
 - [Exclusions](#exclusions)
 - [Copying Output](#copying-output)
 - [Advanced Options](#advanced-options)
+- [Debugging](#debugging)
 - [License](#license)
 
 ## Introduction
@@ -57,6 +58,16 @@ If no path is provided, it defaults to the current directory (`.`).
 - Estimate token count for the output:
   ```bash
   repodump --estimate-tokens
+  ```
+
+- Preview which files would be included without generating full output:
+  ```bash
+  repodump --dry-run
+  ```
+
+- Enable detailed debug output:
+  ```bash
+  repodump --debug
   ```
 
 ## Including and Excluding Files
@@ -161,6 +172,23 @@ The `--clipboard` flag attempts to copy directly to the clipboard using common t
 ```bash
 repodump --clipboard
 ```
+
+## Debugging
+repodump provides several options for debugging and previewing output:
+
+- **Dry Run**: Preview which files would be included without generating the full output:
+  ```bash
+  repodump --dry-run
+  ```
+  This shows a summary of which files would be processed, their sizes, and detected languages.
+
+- **Debug Mode**: Enable verbose output to troubleshoot pattern matching and file processing:
+  ```bash
+  repodump --debug
+  ```
+  Debug output is sent to stderr and won't affect the main output format.
+
+- **Shebang Detection**: For files without extensions, repodump will examine the shebang line (e.g., `#!/bin/bash`) to detect the language and apply the appropriate syntax highlighting in the output.
 
 ## License
 repodump is licensed under the MIT License. See LICENSE for details.
