@@ -112,12 +112,14 @@ is_binary() {
     fi
   else
     # Fallback to basic null byte check if 'file' command is not available
-    # Just check the first 512 bytes for null bytes
-    if head -c 512 "$file" 2>/dev/null | grep -q $'\0'; then
-      debug "File '$file' contains null bytes - marked as binary"
-      return 0
+    debug "Using fallback null byte check for '$file'"
+    # Check the first 512 bytes for null bytes. Run the command then check status.
+    head -c 512 "$file" 2>/dev/null | grep -q $'\0'
+    if [ $? -eq 0 ]; then # Check the exit status of the pipeline
+      debug "File '$file' contains null bytes - marked as binary (fallback)"
+      return 0 # Contains null byte, is binary
     else
-      return 1
+      return 1 # No null byte found, treat as text
     fi
   fi
 }
