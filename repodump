@@ -1,0 +1,611 @@
+#!/bin/bash
+#
+# repodump - Extract and format Git repository or directory contents for sharing with LLMs
+#
+
+# Default Settings
+FORMAT="markdown"
+INCLUDE_REPO_DETAILS=true
+ESTIMATE_TOKENS=false
+USE_CLIPBOARD=false
+INCLUDE_HIDDEN=false
+VERSION="1.0.0"
+TARGET_DIR="."
+IGNORE_PATTERNS=()
+INCLUDE_PATTERNS=() # Added for --include
+
+# Function Definitions
+show_help() {
+  cat << EOF
+repodump v${VERSION} - Extract and format repository or directory contents for LLMs
+
+Usage: repodump [options] [path/to/directory]
+
+Options:
+  --format=FORMAT        Set output format: 'markdown' (default) or 'text'
+  --no-repo-details      Exclude repository details (branch, commit, status)
+  --estimate-tokens      Estimate token count instead of generating full output
+  --clipboard            Copy output to system clipboard
+  --include-hidden       Include hidden files in normal directories
+  --include=PATTERN      Include files matching the glob pattern (can be used multiple times)
+  --exclude=PATTERN      Exclude files matching the glob pattern (can be used multiple times)
+  --help                 Display this help message
+  --version              Display version information
+
+Examples:
+  repodump                               # Process current directory
+  repodump ~/projects/my-repo          # Process specific directory
+  repodump --include="*.py" --exclude="test_*" # Include Python files, exclude tests
+  repodump --estimate-tokens           # Estimate token count
+  repodump --format=text               # Use plain text format
+EOF
+  exit 0
+}
+
+show_version() {
+  echo "repodump v${VERSION}"
+  exit 0
+}
+
+is_git_repo() {
+  [ -d "$1/.git" ] && return 0 || return 1
+}
+
+list_files() {
+  local dir="$1"
+  local include_hidden="$2"
+  
+  # Ensure directory exists before running git or find
+  if [ ! -d "$dir" ]; then
+    echo "Error: Directory '$dir' not found in list_files." >&2
+    return 1
+  fi
+  
+  if is_git_repo "$dir"; then
+    echo "Debug: Listing files via git in '$dir'" >&2
+    # Use git ls-files, making sure we get both tracked and untracked files
+    # The --others flag adds untracked files
+    (cd "$dir" && git ls-files --cached --others --exclude-standard)
+  elif [ "$include_hidden" = true ]; then
+    echo "Debug: Listing all files (including hidden) via find in '$dir'" >&2
+    # Find all files, excluding .git directory contents explicitly
+    find "$dir" -type f -not -path "$dir/.git/*" | sed "s|^$dir/||" | sort
+  else
+    echo "Debug: Listing non-hidden files via find in '$dir'" >&2
+    # Find non-hidden files, excluding .git directory contents explicitly
+    find "$dir" -type f -not -path '*/\.*' -not -path "$dir/.git/*" | sed "s|^$dir/||" | sort
+  fi
+}
+
+is_binary() {
+  local file="$1"
+  
+  # First, check if the 'file' command exists
+  if command -v file >/dev/null 2>&1; then
+    # Use 'file' command which is more reliable for detecting binary files
+    local result=$(file -b --mime-type "$file")
+    if [[ "$result" == "text/"* || "$result" == "application/json" || "$result" == "application/xml" ]]; then
+      # It's a text file
+      return 1
+    else
+      # Might be binary - do additional check for script files
+      local first_line=$(head -n 1 "$file" 2>/dev/null)
+      if [[ "$first_line" == "#!"* ]]; then
+        # It's a script file (has shebang)
+        return 1
+      else
+        echo "Debug: File '$file' detected as binary (MIME type: $result)" >&2
+        return 0
+      fi
+    fi
+  else
+    # Fallback to basic null byte check if 'file' command is not available
+    # Just check the first 512 bytes for null bytes
+    if head -c 512 "$file" 2>/dev/null | grep -q $'\0'; then
+      echo "Debug: File '$file' contains null bytes - marked as binary" >&2
+      return 0
+    else
+      return 1
+    fi
+  fi
+}
+
+read_ignore_file() {
+  local dir="$1"
+  local found_repodumpignore=false
+  
+  # Check for .repodumpignore in directory
+  if [ -f "$dir/.repodumpignore" ]; then
+    while IFS= read -r pattern; do
+      # Trim whitespace and skip empty/comment lines
+      pattern=$(echo "$pattern" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      [[ -n "$pattern" && ! "$pattern" =~ ^# ]] && IGNORE_PATTERNS+=("$pattern")
+    done < "$dir/.repodumpignore"
+    found_repodumpignore=true
+  fi
+  
+  # Check for global ignore file
+  if [ -f "$HOME/.config/repodump/ignore" ]; then
+    while IFS= read -r pattern; do
+      pattern=$(echo "$pattern" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      [[ -n "$pattern" && ! "$pattern" =~ ^# ]] && IGNORE_PATTERNS+=("$pattern")
+    done < "$HOME/.config/repodump/ignore"
+    # We don't set found_repodumpignore here, as global shouldn't prevent fallback
+  fi
+  
+  # If no local .repodumpignore found, use .gitignore if present (only if not a git repo where ls-files handles it)
+  if [ "$found_repodumpignore" = false ] && ! is_git_repo "$dir" && [ -f "$dir/.gitignore" ]; then
+     echo "Using .gitignore for exclusions as .repodumpignore was not found." >&2
+     while IFS= read -r pattern; do
+       pattern=$(echo "$pattern" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+       [[ -n "$pattern" && ! "$pattern" =~ ^# ]] && IGNORE_PATTERNS+=("$pattern")
+     done < "$dir/.gitignore"
+   fi
+}
+
+should_exclude() {
+  local rel_path="$1" # Path relative to TARGET_DIR
+  
+  for pattern in "${IGNORE_PATTERNS[@]}"; do
+    # Handle directory pattern (e.g., "build/")
+    if [[ "$pattern" == */ ]]; then
+      if [[ "$rel_path" == ${pattern}* || "$rel_path" == ${pattern%/} ]]; then
+        # echo "Excluding '$rel_path' due to directory pattern '$pattern'" >&2
+        return 0
+      fi
+    # Handle pattern matching anywhere in the path (e.g., "*.log")
+    elif [[ "$pattern" == "*"* ]]; then
+       if [[ "$rel_path" == $pattern ]]; then
+         # echo "Excluding '$rel_path' due to wildcard pattern '$pattern'" >&2
+         return 0
+       fi
+    # Handle exact match or prefix match if pattern has no wildcards/slash
+    elif [[ "$rel_path" == $pattern || "$rel_path" == $pattern/* ]]; then
+       # echo "Excluding '$rel_path' due to exact/prefix pattern '$pattern'" >&2
+      return 0
+    fi
+  done
+  
+  return 1
+}
+
+should_include() {
+    local rel_path="$1" # Path relative to TARGET_DIR
+
+    # If no include patterns are specified, include everything by default
+    if [ ${#INCLUDE_PATTERNS[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    # If include patterns exist, the file must match at least one
+    for pattern in "${INCLUDE_PATTERNS[@]}"; do
+        # Simple glob matching for now
+        if [[ "$rel_path" == $pattern ]]; then
+            # echo "Including '$rel_path' due to pattern '$pattern'" >&2
+            return 0
+        fi
+         # Handle directory pattern (include everything in the directory)
+        if [[ "$pattern" == */ ]]; then
+            if [[ "$rel_path" == ${pattern}* ]]; then
+                # echo "Including '$rel_path' due to directory include pattern '$pattern'" >&2
+                return 0
+            fi
+        fi
+    done
+
+    # If patterns exist but none matched, exclude the file
+    # echo "Excluding '$rel_path' as it did not match any include patterns" >&2
+    return 1
+}
+
+get_repo_details() {
+  local dir="$1"
+  local branch commit message status
+  
+  if ! is_git_repo "$dir"; then
+    # echo "Not a git repo, skipping details." >&2 # Debugging
+    return 1 # Return non-zero status
+  fi
+  
+  # Check if git command exists
+  if ! command -v git &> /dev/null; then
+      echo "Warning: git command not found. Cannot retrieve repository details." >&2
+      return 1
+  fi
+  
+  branch=$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+  commit=$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+  # Get only the first line of the commit message
+  message=$(git -C "$dir" log -1 --pretty=%s 2>/dev/null || echo "unknown") # %s for subject line
+  
+  if [ -z "$(git -C "$dir" status --porcelain=v1 2>/dev/null)" ]; then # Use v1 for stability
+    status="clean"
+  else
+    status="modified"
+  fi
+  
+  # Only output if we actually got details
+  if [[ -n "$branch" && -n "$commit" ]]; then
+      if [ "$FORMAT" = "markdown" ]; then
+        echo "## Repository Details"
+        echo "- **Branch:** ${branch}"
+        echo "- **Latest Commit:** ${commit} "${message}""
+        echo "- **Status:** ${status}"
+        echo "" # Add a newline for spacing
+      else
+        echo "REPOSITORY DETAILS"
+        echo "Branch: ${branch}"
+        echo "Latest Commit: ${commit} "${message}""
+        echo "Status: ${status}"
+        echo "--------------------------"
+        echo "" # Add a newline for spacing
+      fi
+      return 0 # Success
+  else
+      echo "Warning: Failed to retrieve some git repository details." >&2
+      return 1 # Failure
+  fi
+}
+
+determine_language() {
+  local file="$1"
+  # Get lowercased extension using portable tr
+  local extension="${file##*.}"
+  extension=$(echo "$extension" | tr '[:upper:]' '[:lower:]')
+  
+  case "$extension" in
+    js|ts|jsx|tsx) echo "javascript" ;; # Added jsx/tsx
+    py) echo "python" ;;
+    rb) echo "ruby" ;;
+    go) echo "go" ;;
+    rs) echo "rust" ;;
+    java) echo "java" ;;
+    c|cpp|cc|cxx) echo "cpp" ;;
+    h|hpp|hxx) echo "cpp" ;; # Added hxx
+    sh|bash|zsh) echo "bash" ;; # Added zsh
+    ps1) echo "powershell" ;; # Added powershell
+    md|markdown) echo "markdown" ;; # Added markdown
+    html|htm) echo "html" ;;
+    css) echo "css" ;;
+    scss|sass) echo "scss" ;; # Added scss/sass
+    less) echo "less" ;; # Added less
+    json) echo "json" ;;
+    xml) echo "xml" ;;
+    yaml|yml) echo "yaml" ;;
+    toml) echo "toml" ;;
+    sql) echo "sql" ;;
+    php) echo "php" ;;
+    pl|pm) echo "perl" ;; # Added pm
+    swift) echo "swift" ;;
+    kt|kts) echo "kotlin" ;;
+    dart) echo "dart" ;;
+    ex|exs) echo "elixir" ;;
+    hs|lhs) echo "haskell" ;; # Added lhs
+    scala) echo "scala" ;;
+    lua) echo "lua" ;;
+    groovy) echo "groovy" ;; # Added groovy
+    dockerfile|containerfile) echo "dockerfile" ;; # Added dockerfile
+    tf) echo "terraform" ;; # Added terraform
+    *) echo "" ;; # Default to empty for no specific language hint
+  esac
+}
+
+format_output() {
+  local dir="$1"
+  shift # Remove the first argument (dir)
+  local files=("$@") # Capture the remaining arguments as the files array
+  local output="" # Variable to potentially capture output if needed, though we echo directly
+  
+  # Add repository details if applicable and successful
+  if [ "$INCLUDE_REPO_DETAILS" = true ]; then
+      repo_details_output=$(get_repo_details "$dir")
+      if [ $? -eq 0 ]; then
+          echo "$repo_details_output"
+      fi
+  fi
+  
+  # Process each file
+  for file in "${files[@]}"; do
+    # Ensure file still exists before processing
+    if [ ! -f "$file" ]; then
+      # echo "Warning: File '$file' disappeared during processing." >&2 # Debugging
+      continue
+    fi
+    
+    local rel_path="${file#$dir/}"
+    local language=$(determine_language "$file")
+    
+    if [ "$FORMAT" = "markdown" ]; then
+      echo "## FILE: ${rel_path}"
+      echo -n '```' # Use -n to avoid extra newline before language hint
+      # Only add language hint if determine_language returned something
+      if [ -n "$language" ]; then
+          echo "$language"
+      else
+          echo "" # Just start the code block
+      fi
+      # FIX: Check if file is empty before catting
+      if [ -s "$file" ]; then # Check if file has size > 0
+           cat "$file" # Stream file content directly
+      else
+           echo "# File is empty" # Indicate empty file
+      fi
+      echo '```'
+      echo "" # Add a newline for spacing
+    else # text format
+      echo "FILE: ${rel_path}"
+      echo "--------------------------"
+      # FIX: Check if file is empty before catting
+      if [ -s "$file" ]; then # Check if file has size > 0
+          cat "$file" # Stream file content directly
+      else
+          echo "# File is empty" # Indicate empty file
+      fi
+      echo "" # Add a newline
+      echo "--------------------------"
+      echo "" # Add a newline for spacing
+    fi
+  done
+}
+
+estimate_tokens() {
+  shift # Remove the first argument (dir, though not used here, passed for consistency)
+  local files=("$@") # Capture the remaining arguments as the files array
+  local total=0
+  local missing_files=0
+  
+  # Check availability of ttok or wc
+   local counter_cmd=""
+   if command -v ttok >/dev/null 2>&1; then
+       counter_cmd="ttok"
+   elif command -v wc >/dev/null 2>&1; then
+       counter_cmd="wc -w"
+   else
+       echo "Error: Neither 'ttok' nor 'wc' command found. Cannot estimate tokens." >&2
+       exit 1
+   fi
+  
+  if [ "$counter_cmd" = "ttok" ]; then
+    for file in "${files[@]}"; do
+       if [ -f "$file" ]; then
+           count=$(cat "$file" | ttok)
+           total=$((total + count))
+       else
+           missing_files=$((missing_files + 1))
+       fi
+    done
+    echo "Estimated token count (using ttok): $total"
+  else # Use wc -w
+    for file in "${files[@]}"; do
+       if [ -f "$file" ]; then
+           count=$(wc -w < "$file")
+           total=$((total + count))
+       else
+           missing_files=$((missing_files + 1))
+       fi
+    done
+    echo "Estimated token count (using wc -w): $total"
+    echo "(Note: For potentially more accurate token counting, consider installing 'ttok': pip install ttok or brew install ttok)" >&2 # Direct warning to stderr
+  fi
+  
+  if [ "$missing_files" -gt 0 ]; then
+       echo "Warning: Skipped $missing_files files that disappeared during processing." >&2
+   fi
+}
+
+copy_to_clipboard() {
+  # FIX: Remove argument processing, read directly from stdin when piped
+  # local content="$1" # REMOVED
+  local content_capture="" # To capture stdin if needed for fallback
+
+  local clipboard_cmd=""
+  local cmd_name=""
+
+  # Detect clipboard command (logic unchanged)
+  if command -v pbcopy >/dev/null 2>&1; then
+    clipboard_cmd="pbcopy"
+    cmd_name="pbcopy (macOS)"
+  elif command -v wl-copy >/dev/null 2>&1; then
+    clipboard_cmd="wl-copy"
+    cmd_name="wl-copy (Wayland)"
+  elif command -v xclip >/dev/null 2>&1; then
+     if [ -n "$DISPLAY" ]; then
+         clipboard_cmd="xclip -selection clipboard"
+         cmd_name="xclip (X11)"
+     fi
+  elif command -v clip.exe >/dev/null 2>&1; then
+    clipboard_cmd="clip.exe"
+    cmd_name="clip.exe (Windows)"
+  elif command -v termux-clipboard-set >/dev/null 2>&1; then
+      clipboard_cmd="termux-clipboard-set"
+      cmd_name="termux-clipboard-set (Termux)"
+  fi
+
+  if [ -n "$clipboard_cmd" ]; then
+    # FIX: Pipe stdin directly to the clipboard command
+    # Capture stdin first in case the command fails and we need to fallback
+    content_capture=$(cat)
+    printf "%s" "$content_capture" | $clipboard_cmd
+
+    if [ $? -eq 0 ]; then
+        echo "Output successfully copied to clipboard using $cmd_name." >&2
+    else
+        echo "Warning: Command '$cmd_name' failed to copy to clipboard. Outputting to stdout." >&2
+        printf "%s" "$content_capture" # Fallback to stdout with captured content
+    fi
+  else
+    # FIX: Capture stdin if no command found and outputting to stdout
+    content_capture=$(cat)
+    echo "Warning: No supported clipboard command found. Outputting to stdout." >&2
+    printf "%s" "$content_capture" # Fallback to stdout
+  fi
+}
+
+# Parse command-line options
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --help)
+      show_help
+      ;;
+    --version)
+      show_version
+      ;;
+    --format=*)
+      FORMAT="${1#*=}"
+      if [[ "$FORMAT" != "markdown" && "$FORMAT" != "text" ]]; then
+        echo "Error: Invalid format specified: '$FORMAT'. Choose 'markdown' or 'text'." >&2
+        exit 1
+      fi
+      shift
+      ;;
+    --no-repo-details)
+      INCLUDE_REPO_DETAILS=false
+      shift
+      ;;
+    --estimate-tokens)
+      ESTIMATE_TOKENS=true
+      shift
+      ;;
+    --clipboard)
+      USE_CLIPBOARD=true
+      shift
+      ;;
+    --include-hidden)
+      INCLUDE_HIDDEN=true
+      shift
+      ;;
+    # FIX: Handle multiple --include flags
+    --include=*)
+      INCLUDE_PATTERNS+=("${1#*=}")
+      shift
+      ;;
+    # FIX: Handle multiple --exclude flags
+    --exclude=*)
+      IGNORE_PATTERNS+=("${1#*=}") # Add directly to ignore patterns
+      shift
+      ;;
+    -*)
+      echo "Error: Unknown option: $1" >&2
+      echo "Use '--help' for usage information." >&2
+      exit 1
+      ;;
+    *)
+      # Handle case where target dir might be provided multiple times
+      if [ "$TARGET_DIR" != "." ] && [ -n "$TARGET_DIR" ]; then
+           echo "Error: Target directory specified more than once ('$TARGET_DIR' and '$1')." >&2
+           exit 1
+       fi
+      TARGET_DIR="$1"
+      shift
+      ;;
+  esac
+done
+
+# Validate target directory
+if [ ! -d "$TARGET_DIR" ]; then
+  echo "Error: Directory '$TARGET_DIR' not found or is not a directory." >&2
+  exit 1
+fi
+if [ ! -r "$TARGET_DIR" ]; then
+    echo "Error: Directory '$TARGET_DIR' is not readable." >&2
+    exit 1
+fi
+
+# Convert to absolute path AFTER validation
+TARGET_DIR=$(cd "$TARGET_DIR" && pwd)
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to resolve absolute path for '$TARGET_DIR'." >&2
+    exit 1
+fi
+
+# Read ignore patterns from files (respecting .repodumpignore > .gitignore if applicable)
+read_ignore_file "$TARGET_DIR"
+
+# List initial set of files based on directory type and hidden flag
+# Use mapfile if available (Bash 4+), otherwise use a while read loop for portability
+all_files=()
+if command -v readarray >/dev/null; then
+    # Use mapfile (readarray) for efficiency in Bash 4+
+    readarray -t all_files < <(list_files "$TARGET_DIR" "$INCLUDE_HIDDEN")
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to list files using readarray in '$TARGET_DIR'." >&2
+        exit 1
+    fi
+else
+    # Fallback for older Bash versions or shells without readarray
+    while IFS= read -r line || [[ -n "$line" ]]; do # Handle lines with or without trailing newline
+        all_files+=("$line")
+    done < <(list_files "$TARGET_DIR" "$INCLUDE_HIDDEN")
+    # Check the status of the process substitution command (list_files)
+    # This is tricky as the read loop status might mask the command status.
+    # A simpler check might be if the array remains empty when it shouldn't.
+    if [ $? -ne 0 ] && [ ${#all_files[@]} -eq 0 ]; then # Heuristic check
+         echo "Error: Failed to list files using while loop in '$TARGET_DIR'." >&2
+         exit 1
+     fi
+fi
+
+# Filter files based on include/exclude patterns and binary check
+valid_files=()
+echo "Debug: Found ${#all_files[@]} files initially" >&2
+
+for rel_path in "${all_files[@]}"; do
+  # Ensure relative path is not empty
+   if [ -z "$rel_path" ]; then
+       continue
+   fi
+
+  full_path="$TARGET_DIR/$rel_path"
+  
+  # Debug: show files being processed
+  echo "Debug: Processing $rel_path" >&2
+
+  # Skip if file no longer exists (can happen with race conditions or complex git states)
+  if [ ! -f "$full_path" ]; then
+    echo "Debug: Skipping '$rel_path' as it does not exist or is not a file." >&2
+    continue
+  fi
+
+  # 1. Check include patterns first (if any)
+  if ! should_include "$rel_path"; then
+      echo "Debug: Skipping '$rel_path' - did not match include patterns." >&2
+      continue
+  fi
+
+  # 2. Check exclude patterns (from files and --exclude flags)
+  if should_exclude "$rel_path"; then
+      echo "Debug: Skipping '$rel_path' - matched exclude patterns." >&2
+      continue
+  fi
+
+  # 3. Skip binary files
+  if is_binary "$full_path"; then
+      echo "Debug: Skipping binary file '$rel_path'." >&2
+      continue
+  fi
+
+  # If all checks pass, add the full path to valid_files
+  echo "Debug: Including '$rel_path'" >&2
+  valid_files+=("$full_path")
+done
+
+# Check if we have valid files after all filtering
+if [ ${#valid_files[@]} -eq 0 ]; then
+  echo "No text files found matching the criteria in '$TARGET_DIR'." >&2
+  # Decide if this is an error or just an empty result. Let's treat as non-error.
+  exit 0 # Exit successfully with no output
+fi
+
+# Process the final list of valid files
+if [ "$ESTIMATE_TOKENS" = true ]; then
+  estimate_tokens "$TARGET_DIR" "${valid_files[@]}"
+else
+  if [ "$USE_CLIPBOARD" = true ]; then
+      # FIX: Just pipe format_output to copy_to_clipboard (which now reads stdin)
+      format_output "$TARGET_DIR" "${valid_files[@]}" | copy_to_clipboard
+  else
+      format_output "$TARGET_DIR" "${valid_files[@]}"
+  fi
+fi
+
+exit 0 
