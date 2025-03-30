@@ -7,7 +7,7 @@
 FORMAT="markdown"
 INCLUDE_REPO_DETAILS=true
 ESTIMATE_TOKENS=false
-USE_CLIPBOARD=false
+# USE_CLIPBOARD=false # Removed
 INCLUDE_HIDDEN=false
 DEBUG_MODE=false
 DRY_RUN=false
@@ -34,7 +34,7 @@ Options:
   --format=FORMAT        Set output format: 'markdown' (default) or 'text'
   --no-repo-details      Exclude repository details (branch, commit, status)
   --estimate-tokens      Estimate token count instead of generating full output
-  --clipboard            Copy output to system clipboard
+  # --clipboard            Copy output to system clipboard # Removed
   --include-hidden       Include hidden files in normal directories
   --include=PATTERN      Include files matching the glob pattern (can be used multiple times)
   --exclude=PATTERN      Exclude files matching the glob pattern (can be used multiple times)
@@ -532,51 +532,6 @@ estimate_tokens() {
    fi
 }
 
-copy_to_clipboard() {
-  # Read directly from stdin when piped
-  local content_capture="" # To capture stdin if needed for fallback
-  local clipboard_cmd=""
-  local cmd_name=""
-
-  # Detect clipboard command
-  if command -v pbcopy >/dev/null 2>&1; then
-    clipboard_cmd="pbcopy"
-    cmd_name="pbcopy (macOS)"
-  elif command -v wl-copy >/dev/null 2>&1; then
-    clipboard_cmd="wl-copy"
-    cmd_name="wl-copy (Wayland)"
-  elif command -v xclip >/dev/null 2>&1; then
-     if [ -n "$DISPLAY" ]; then
-         clipboard_cmd="xclip -selection clipboard"
-         cmd_name="xclip (X11)"
-     fi
-  elif command -v clip.exe >/dev/null 2>&1; then
-    clipboard_cmd="clip.exe"
-    cmd_name="clip.exe (Windows)"
-  elif command -v termux-clipboard-set >/dev/null 2>&1; then
-      clipboard_cmd="termux-clipboard-set"
-      cmd_name="termux-clipboard-set (Termux)"
-  fi
-
-  if [ -n "$clipboard_cmd" ]; then
-    # Capture stdin first in case the command fails and we need to fallback
-    content_capture=$(cat)
-    printf "%s" "$content_capture" | $clipboard_cmd
-
-    if [ $? -eq 0 ]; then
-        echo "Output successfully copied to clipboard using $cmd_name." >&2
-    else
-        echo "Warning: Command '$cmd_name' failed to copy to clipboard. Outputting to stdout." >&2
-        printf "%s" "$content_capture" # Fallback to stdout with captured content
-    fi
-  else
-    # Capture stdin if no command found and outputting to stdout
-    content_capture=$(cat)
-    echo "Warning: No supported clipboard command found. Outputting to stdout." >&2
-    printf "%s" "$content_capture" # Fallback to stdout
-  fi
-}
-
 # Parse command-line options
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -602,10 +557,10 @@ while [ $# -gt 0 ]; do
       ESTIMATE_TOKENS=true
       shift
       ;;
-    --clipboard)
-      USE_CLIPBOARD=true
-      shift
-      ;;
+    # --clipboard) # Removed
+    #   USE_CLIPBOARD=true # Removed
+    #   shift # Removed
+    #   ;; # Removed
     --include-hidden)
       INCLUDE_HIDDEN=true
       shift
@@ -742,13 +697,13 @@ elif [ "$ESTIMATE_TOKENS" = true ]; then
   # In token estimation mode
   estimate_tokens "$TARGET_DIR" "${valid_files[@]}"
 else
-  # Normal processing mode
-  if [ "$USE_CLIPBOARD" = true ]; then
-      # Pipe format_output to copy_to_clipboard
-      format_output "$TARGET_DIR" "${valid_files[@]}" | copy_to_clipboard
-  else
+  # Normal processing mode - Removed clipboard logic
+  # if [ "$USE_CLIPBOARD" = true ]; then
+  #     # Pipe format_output to copy_to_clipboard
+  #     format_output "$TARGET_DIR" "${valid_files[@]}" | copy_to_clipboard
+  # else
       format_output "$TARGET_DIR" "${valid_files[@]}"
-  fi
+  # fi
 fi
 
 exit 0 
