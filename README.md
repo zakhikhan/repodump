@@ -1,6 +1,6 @@
 # repodump
 
-`repodump` is a command-line tool that extracts and formats the contents of a Git repository or a normal directory, making it easy to share with large language models (LLMs) or other applications. It works on both **Git repositories** and **regular directories**, automatically adapting its behavior. It outputs the contents to stdout in a structured format, which you can pipe into your preferred copy command for seamless integration into your workflow.
+`repodump` is a command-line tool that extracts and formats the contents of a Git repository as markdown, making it easy to share with large language models (LLMs) or other applications. It works on both **Git repositories** and **regular directories**, automatically adapting its behavior. It outputs the contents to stdout in a structured format, which you can pipe into your preferred copy command for seamless integration into your workflow.
 
 ## Table of Contents
 - [Introduction](#introduction)
@@ -44,7 +44,7 @@ Future Homebrew support is planned
 Run repodump with a path to a Git repository or directory:
 
 ```bash
-repodump /path/to/directory
+repodump /path/to/directory | pbcopy
 ```
 
 If no path is provided, it defaults to the current directory (`.`).
