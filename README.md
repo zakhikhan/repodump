@@ -1,6 +1,6 @@
 # repodump
 
-`repodump` is a command-line tool that extracts and formats the contents of a Git repository or a normal directory, making it easy to share with large language models (LLMs) or other applications. It works on both **Git repositories** and **regular directories**, automatically adapting its behavior. It outputs the contents to stdout in a structured format, which you can pipe into your preferred copy command for seamless integration into your workflow.
+`repodump` is a command-line tool that extracts and formats the contents of a Git repository as markdown, making it easy to share with large language models (LLMs) or other applications. It works on both **Git repositories** and **regular directories**, automatically adapting its behavior. It outputs the contents to stdout in a structured format, which you can pipe into your preferred copy command for seamless integration into your workflow.
 
 ## Table of Contents
 - [Introduction](#introduction)
@@ -41,13 +41,14 @@ sudo mv repodump /usr/local/bin/
 Future Homebrew support is planned
 
 ## Usage
-Run repodump with a path to a Git repository or directory:
+Run repodump with a path to a Git repository or directory. The primary way to use `repodump` is to pipe its standard output (stdout) directly to your platform's clipboard command.
 
+**Example (macOS):**
 ```bash
-repodump /path/to/directory
+repodump /path/to/directory | pbcopy
 ```
 
-If no path is provided, it defaults to the current directory (`.`).
+If no path is provided, it defaults to the current directory (`.`). See the [Copying Output](#copying-output) section for commands specific to other platforms (Linux, Windows).
 
 ### Command-Line Options
 
@@ -159,7 +160,7 @@ repodump automatically skips binary files and uses multiple sources for exclusio
 This layered approach ensures that repodump works intelligently out of the box while still giving you the flexibility to customize its behavior for your specific needs.
 
 ## Copying Output
-repodump sends its output to stdout, letting you pipe it to your preferred copy command. This approach gives you flexibility to adapt it to your platform or workflow.
+As shown in the [Usage](#usage) section, repodump sends its output to stdout, allowing you to pipe it directly to your preferred copy command. This approach follows the Unix philosophy and gives you flexibility to adapt it to your platform or workflow.
 
 ### Platform-Specific Copy Commands
 
