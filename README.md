@@ -38,10 +38,7 @@ chmod +x repodump
 sudo mv repodump /usr/local/bin/
 ```
 
-Future Homebrew support is planned:
-```bash
-brew install repodump
-```
+Future Homebrew support is planned
 
 ## Usage
 Run repodump with a path to a Git repository or directory:
