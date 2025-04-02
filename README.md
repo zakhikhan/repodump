@@ -30,15 +30,21 @@
 Following the Unix philosophy, `repodump` focuses on generating formatted output and leaves copying to other specialized tools. By piping its output to your preferred copy command, you can customize it to your platform and preferences.
 
 ## Installation
-To install `repodump`, download the script and make it executable:
 
+Homebrew:
+```bash
+brew tap zakhikhan/tools
+brew install repodump
+```
+
+Manual installation (not recommended):
 ```bash
 curl -fsSL https://github.com/zakhikhan/repodump/raw/main/repodump -o repodump
 chmod +x repodump
 sudo mv repodump /usr/local/bin/
 ```
 
-Future Homebrew support is planned
+If you'd like to see support for other package managers, please open an issue to request it.
 
 ## Usage
 Run repodump with a path to a Git repository or directory. The primary way to use `repodump` is to pipe its standard output (stdout) directly to your platform's clipboard command.

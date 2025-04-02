@@ -11,7 +11,7 @@ ESTIMATE_TOKENS=false
 INCLUDE_HIDDEN=false
 DEBUG_MODE=false
 DRY_RUN=false
-VERSION="1.0.0"
+VERSION="0.1.1-alpha"
 TARGET_DIR="."
 IGNORE_PATTERNS=()
 INCLUDE_PATTERNS=() # Added for --include
@@ -515,7 +515,7 @@ estimate_tokens() {
            missing_files=$((missing_files + 1))
        fi
     done
-    echo "Estimated token count (using ttok): $total"
+    echo "Estimated token count: $total"
   else # Use wc -w
     for file in "${files[@]}"; do
        if [ -f "$file" ]; then
@@ -525,7 +525,7 @@ estimate_tokens() {
            missing_files=$((missing_files + 1))
        fi
     done
-    echo "Estimated token count (using wc -w): $total"
+    echo "Estimated token count: $total"
     echo "(Note: For potentially more accurate token counting, consider installing 'ttok': pip install ttok or brew install simonw/llm/ttok)" >&2 # Direct warning to stderr
   fi
   
